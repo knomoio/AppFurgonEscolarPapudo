@@ -37,7 +37,7 @@ def get_storage():
             except Exception:
                 ws = sh.add_worksheet(title="trips", rows=1000, cols=20)
                 # set headers
-                ws.update("A1:F1", [["date","leg","driver","passengers","car","notes"]])
+                ws.update("A1:G1", [["row_id","date","leg","driver","passengers","car","notes"]])
             gsheets_ready = True
             use_gsheets = True
     except Exception as e:
@@ -57,12 +57,12 @@ def get_storage():
                 values = ws.get_all_records()
                 df = pd.DataFrame(values)
             except Exception:
-                df = pd.DataFrame(columns=["date","leg","driver","passengers","car","notes"])
+                df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
         else:
             if os.path.exists(LOCAL_CSV):
                 df = pd.read_csv(LOCAL_CSV, dtype=str).fillna("")
             else:
-                df = pd.DataFrame(columns=["date","leg","driver","passengers","car","notes"])
+                df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
         # Sanear tipos
         if "date" in df.columns:
             # Normalizar a ISO yyyy-mm-dd
@@ -78,7 +78,7 @@ def get_storage():
     def save(df: pd.DataFrame):
         df = df.copy()
         # Asegurar columnas
-        base_cols = ["date","leg","driver","passengers","car","notes"]
+        base_cols = ["row_id","date","leg","driver","passengers","car","notes"]
         for c in base_cols:
             if c not in df.columns:
                 df[c] = ""
@@ -98,9 +98,9 @@ def get_storage():
                 ws = sh.add_worksheet(title="trips", rows=len(df)+10, cols=len(df.columns)+2)
             # Limpiar y subir todo (simple y robusto para planillas pequeñas)
             ws.clear()
-            ws.update("A1:F1", [df.columns.tolist()])
+            ws.update("A1:G1", [df.columns.tolist()])
             if not df.empty:
-                ws.update(f"A2:F{len(df)+1}", df.values.tolist())
+                ws.update(f"A2:G{len(df)+1}", df.values.tolist())
         else:
             df.to_csv(LOCAL_CSV, index=False, encoding="utf-8")
 
