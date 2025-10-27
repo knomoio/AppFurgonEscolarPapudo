@@ -1,112 +1,44 @@
-# streamlit_app.py — Registro de Traslados Papudo ↔ La Ligua
-import os, io, json
-from datetime import datetime, date
+# streamlit_app.py — Registro de Traslados (CSV local únicamente)
+import os
+from datetime import date
 import pandas as pd
 import streamlit as st
 
 # ---------------------------- Config ----------------------------
-st.set_page_config(page_title="Registro de Traslados — Papudo ↔ La Ligua", layout="wide")
+st.set_page_config(page_title="Registro de Traslados — CSV local", layout="wide")
 
 # ---------------------------- Constantes / Defaults ----------------------------
 DEFAULT_DRIVERS = ["Wilson", "Valentina"]
 DEFAULT_PEOPLE  = ["Wilson", "Valentina", "Jp", "Gerard", "Paula"]
 DEFAULT_FARE_CLP = 1250  # costo por tramo (Ida o Vuelta) por persona
 
-LOCAL_CSV = "trips.csv"  # respaldo local si no hay Google Sheets
+LOCAL_CSV = "trips.csv"  # archivo local
 
-# ---------------------------- Helpers: Storage Backend ----------------------------
-@st.cache_resource(show_spinner=False)
-def get_storage():
-    """Devuelve un dict con funciones save(df) y load() usando Google Sheets si hay secretos, 
-    sino CSV local como fallback."""
-    use_gsheets = False
-    gsheets_ready = False
-    try:
-        secrets = st.secrets
-        # Esperamos dos parámetros: gcp_service_account (json) y sheet_id (string)
-        if "gcp_service_account" in secrets and "sheet_id" in secrets:
-            import gspread
-            from google.oauth2.service_account import Credentials
-            info = secrets["gcp_service_account"]
-            scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-            creds = Credentials.from_service_account_info(info, scopes=scopes)
-            client = gspread.authorize(creds)
-            sh = client.open_by_key(secrets["sheet_id"])
-            try:
-                ws = sh.worksheet("trips")
-            except Exception:
-                ws = sh.add_worksheet(title="trips", rows=1000, cols=20)
-                # set headers
-                ws.update("A1:G1", [["row_id","date","leg","driver","passengers","car","notes"]])
-            gsheets_ready = True
-            use_gsheets = True
-    except Exception as e:
-        gsheets_ready = False
-        use_gsheets = False
+# ---------------------------- Helpers: CSV Storage ----------------------------
+def load_csv(path: str) -> pd.DataFrame:
+    if os.path.exists(path):
+        try:
+            df = pd.read_csv(path, dtype=str).fillna("")
+        except Exception:
+            df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
+    else:
+        df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
+    # Asegurar columnas
+    for c in ["row_id","date","leg","driver","passengers","car","notes"]:
+        if c not in df.columns:
+            df[c] = ""
+    # Forzar row_id numérico si existe
+    if not df.empty:
+        df["row_id"] = pd.to_numeric(df["row_id"], errors="coerce").fillna(0).astype(int)
+    return df
 
-    def load():
-        if use_gsheets and gsheets_ready:
-            import gspread
-            try:
-                ws = gspread.authorize(
-                    __import__("google.oauth2.service_account", fromlist=['Credentials']).service_account.Credentials.from_service_account_info(
-                        st.secrets["gcp_service_account"],
-                        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                    )
-                ).open_by_key(st.secrets["sheet_id"]).worksheet("trips")
-                values = ws.get_all_records()
-                df = pd.DataFrame(values)
-            except Exception:
-                df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
-        else:
-            if os.path.exists(LOCAL_CSV):
-                df = pd.read_csv(LOCAL_CSV, dtype=str).fillna("")
-            else:
-                df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
-        # Sanear tipos
-        if "date" in df.columns:
-            # Normalizar a ISO yyyy-mm-dd
-            try:
-                df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
-            except Exception:
-                pass
-        for col in ["leg","driver","passengers","car","notes"]:
-            if col in df.columns:
-                df[col] = df[col].astype(str)
-        return df
-
-    def save(df: pd.DataFrame):
-        df = df.copy()
-        # Asegurar columnas
-        base_cols = ["row_id","date","leg","driver","passengers","car","notes"]
-        for c in base_cols:
-            if c not in df.columns:
-                df[c] = ""
-        df = df[base_cols]
-        if use_gsheets and gsheets_ready:
-            import gspread
-            client = gspread.authorize(
-                __import__("google.oauth2.service_account", fromlist=['Credentials']).service_account.Credentials.from_service_account_info(
-                    st.secrets["gcp_service_account"],
-                    scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                )
-            )
-            sh = client.open_by_key(st.secrets["sheet_id"])
-            try:
-                ws = sh.worksheet("trips")
-            except Exception:
-                ws = sh.add_worksheet(title="trips", rows=len(df)+10, cols=len(df.columns)+2)
-            # Limpiar y subir todo (simple y robusto para planillas pequeñas)
-            ws.clear()
-            ws.update("A1:G1", [df.columns.tolist()])
-            if not df.empty:
-                ws.update(f"A2:G{len(df)+1}", df.values.tolist())
-        else:
-            df.to_csv(LOCAL_CSV, index=False, encoding="utf-8")
-
-    return {"load": load, "save": save, "use_gsheets": use_gsheets and gsheets_ready}
-
-storage = get_storage()
+def save_csv(df: pd.DataFrame, path: str):
+    base_cols = ["row_id","date","leg","driver","passengers","car","notes"]
+    for c in base_cols:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[base_cols].copy()
+    df.to_csv(path, index=False, encoding="utf-8")
 
 # ---------------------------- State & Sidebar ----------------------------
 if "fare" not in st.session_state:
@@ -118,15 +50,22 @@ with st.sidebar:
     st.session_state.fare = int(fare)
     drivers = st.multiselect("Conductores", DEFAULT_DRIVERS, default=DEFAULT_DRIVERS)
     people  = st.multiselect("Personas", DEFAULT_PEOPLE, default=DEFAULT_PEOPLE)
-    st.caption("💾 Almacenamiento: " + ("Google Sheets" if storage["use_gsheets"] else "CSV local"))
+    st.caption("💾 Almacenamiento: CSV local")
+    st.caption(f"Archivo: {LOCAL_CSV}")
     st.markdown("---")
     st.write("**Ayuda rápida**")
     st.caption("• Un *tramo* es Ida **o** Vuelta.\n• Selecciona conductor/a y pasajeros transportados en ese tramo.")
 
-df = storage["load"]()
+df = load_csv(LOCAL_CSV)
+
+# Garantizar columna identificadora estable para poder borrar/editar filas
+if df.empty:
+    next_id = 1
+else:
+    next_id = int(pd.to_numeric(df["row_id"], errors="coerce").fillna(0).max()) + 1
 
 # ---------------------------- UI: Alta de Viajes ----------------------------
-st.title("🚗 Registro de Traslados — Papudo ↔ La Ligua")
+st.title("🚗 Registro de Traslados — CSV local")
 st.write("Registra cada **tramo (Ida/Vuelta)** indicando **quién conduce** y **a quién transporta**.")
 
 with st.expander("➕ Agregar tramo (Ida/Vuelta)", expanded=True):
@@ -136,31 +75,106 @@ with st.expander("➕ Agregar tramo (Ida/Vuelta)", expanded=True):
         leg = st.selectbox("Tramo", options=["Ida","Vuelta"])
     with col2:
         driver = st.selectbox("Conductor/a", options=drivers)
-        car = driver  # auto asociado al conductor (Wilson o Valentina)
+        car = driver  # auto asociado al conductor
     with col3:
         passengers = st.multiselect("Pasajeros transportados", options=[p for p in people if p != driver])
         notes = st.text_input("Notas (opcional)", value="")
 
     add_btn = st.button("Guardar tramo", type="primary", use_container_width=True)
     if add_btn:
-        # Construir fila
-        new_row = {
-            "date": ddate.strftime("%Y-%m-%d"),
-            "leg": leg,
-            "driver": driver,
-            "passengers": ",".join(passengers),
-            "car": car,
-            "notes": notes.strip()
-        }
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        storage["save"](df)
-        st.success("Tramo guardado.")
+        if len(passengers) == 0:
+            st.warning("Debes seleccionar al menos un pasajero.")
+        else:
+            new_row = {
+                "row_id": next_id,
+                "date": pd.to_datetime(ddate).strftime("%Y-%m-%d"),
+                "leg": leg,
+                "driver": driver,
+                "passengers": ",".join(passengers),
+                "car": car,
+                "notes": notes.strip()
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_csv(df, LOCAL_CSV)
+            st.success("Tramo guardado.")
+            st.experimental_rerun()
 
-# ---------------------------- Tablas y Resúmenes ----------------------------
+# ---------------------------- Registro histórico (Editar/Eliminar) ----------------------------
 st.subheader("📋 Registro histórico")
-st.dataframe(df.sort_values(["date","leg","driver"], ascending=[True, True, True]), use_container_width=True)
+hist = df.sort_values(["date","leg","driver"], ascending=[True, True, True]).copy()
+if "Eliminar" not in hist.columns:
+    hist["Eliminar"] = False
 
-# Procesar montos por persona
+display_cols = ["Eliminar","date","leg","driver","passengers","car","notes","row_id"]
+display_cols = [c for c in display_cols if c in hist.columns]
+
+# Column config
+try:
+    col_config = {
+        "leg": st.column_config.SelectboxColumn("Tramo", options=["Ida","Vuelta"]),
+        "driver": st.column_config.SelectboxColumn("Conductor/a", options=drivers),
+        "passengers": st.column_config.TextColumn("Pasajeros (separa por coma)"),
+        "date": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
+        "notes": st.column_config.TextColumn("Notas"),
+        "car": st.column_config.TextColumn("Auto"),
+        "row_id": st.column_config.NumberColumn("ID", disabled=True),
+        "Eliminar": st.column_config.CheckboxColumn("Eliminar")
+    }
+except Exception:
+    col_config = {}
+
+edited = st.data_editor(
+    hist[display_cols],
+    use_container_width=True,
+    num_rows="fixed",
+    key="editor_hist",
+    column_config=col_config
+)
+
+col_left, col_right = st.columns([1,1])
+with col_left:
+    save_btn = st.button("💾 Guardar cambios", type="primary", use_container_width=True)
+with col_right:
+    del_btn = st.button("🗑️ Eliminar seleccionados", type="secondary", use_container_width=True)
+
+# Guardar cambios editados
+if save_btn:
+    updated = edited.copy()
+    # Validaciones y normalizaciones
+    if "date" in updated.columns:
+        updated["date"] = pd.to_datetime(updated["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    # Auto por defecto = driver si viene vacío
+    if "car" in updated.columns and "driver" in updated.columns:
+        updated["car"] = updated.apply(lambda r: r["car"] if isinstance(r["car"], str) and r["car"].strip() else r["driver"], axis=1)
+    # Aplicar cambios por row_id
+    if "row_id" in updated.columns and "row_id" in df.columns:
+        cols_to_update = [c for c in ["date","leg","driver","passengers","car","notes"] if c in updated.columns and c in df.columns]
+        df = df.set_index("row_id")
+        upd = updated.set_index("row_id")
+        # Solo actualizar ids que existan
+        inter = df.index.intersection(upd.index)
+        df.loc[inter, cols_to_update] = upd.loc[inter, cols_to_update]
+        df = df.reset_index()
+        save_csv(df, LOCAL_CSV)
+        st.success("Cambios guardados en CSV.")
+        st.experimental_rerun()
+    else:
+        st.error("No se encontró 'row_id' para aplicar cambios.")
+
+# Eliminar registros seleccionados
+if del_btn:
+    to_delete_ids = edited.loc[edited.get("Eliminar", False) == True, "row_id"].tolist() if "row_id" in edited.columns else []
+    if to_delete_ids:
+        new_df = df[~df["row_id"].isin(to_delete_ids)].copy()
+        save_csv(new_df, LOCAL_CSV)
+        st.success(f"Se eliminaron {len(to_delete_ids)} registro(s).")
+        st.experimental_rerun()
+    else:
+        st.info("No hay registros marcados para eliminar.")
+
+st.markdown("---")
+
+# ---------------------------- Cálculos y Resúmenes ----------------------------
 def explode_passengers(df_in: pd.DataFrame) -> pd.DataFrame:
     if df_in.empty:
         return pd.DataFrame(columns=["date","leg","driver","passenger","fare"])
@@ -180,32 +194,37 @@ def explode_passengers(df_in: pd.DataFrame) -> pd.DataFrame:
 pay_df = explode_passengers(df)
 # Totales por día / mes / acumulado
 if not pay_df.empty:
-    pay_df["date"] = pd.to_datetime(pay_df["date"]).dt.date
-    pay_df["month"] = pd.to_datetime(pay_df["date"]).to_period("M").astype(str)
+    pay_df["date"] = pd.to_datetime(pay_df["date"], errors="coerce")
+    pay_df = pay_df.dropna(subset=["date"])
+    pay_df["date"] = pay_df["date"].dt.normalize()
+    pay_df["month"] = pay_df["date"].dt.to_period("M").astype(str)
 
 colA, colB, colC = st.columns(3)
 with colA:
     st.markdown("### 📅 Hoy")
-    today = date.today()
-    today_df = pay_df[pay_df["date"] == today] if not pay_df.empty else pd.DataFrame(columns=pay_df.columns if not pay_df.empty else [])
-    if today_df.empty:
+    if pay_df.empty:
         st.info("Sin registros hoy.")
     else:
-        st.metric("Total cobrado por conductores (hoy)", f"$ {int(today_df['fare'].sum()):,}".replace(",", "."))
-        st.dataframe(today_df.groupby("driver")["fare"].sum().reset_index(name="cobro_hoy (CLP)"), use_container_width=True)
+        today_ts = pd.Timestamp.today().normalize()
+        today_df = pay_df[pay_df["date"] == today_ts]
+        if today_df.empty:
+            st.info("Sin registros hoy.")
+        else:
+            st.metric("Total cobrado por conductores (hoy)", f"$ {int(today_df['fare'].sum()):,}".replace(",", "."))
+            st.dataframe(today_df.groupby("driver")["fare"].sum().reset_index(name="cobro_hoy (CLP)"), use_container_width=True)
 
 with colB:
     st.markdown("### 🗓️ Mes actual")
-    if not pay_df.empty:
-        month_key = date.today().strftime("%Y-%m")
-        month_df = pay_df[pay_df["month"] == month_key]
-    else:
-        month_df = pd.DataFrame(columns=pay_df.columns if not pay_df.empty else [])
-    if month_df.empty:
+    if pay_df.empty:
         st.info("Sin registros este mes.")
     else:
-        st.metric("Total cobrado (mes)", f"$ {int(month_df['fare'].sum()):,}".replace(",", "."))
-        st.dataframe(month_df.groupby("driver")["fare"].sum().reset_index(name="cobro_mes (CLP)"), use_container_width=True)
+        month_key = pd.Timestamp.today().strftime("%Y-%m")
+        month_df = pay_df[pay_df["month"] == month_key]
+        if month_df.empty:
+            st.info("Sin registros este mes.")
+        else:
+            st.metric("Total cobrado (mes)", f"$ {int(month_df['fare'].sum()):,}".replace(",", "."))
+            st.dataframe(month_df.groupby("driver")["fare"].sum().reset_index(name="cobro_mes (CLP)"), use_container_width=True)
 
 with colC:
     st.markdown("### 🧮 Acumulado")
@@ -216,22 +235,17 @@ with colC:
         st.dataframe(pay_df.groupby("driver")["fare"].sum().reset_index(name="cobro_total (CLP)"), use_container_width=True)
 
 st.markdown("---")
-
-# Saldos por persona (quién debe a quién)
 st.subheader("💰 Saldos por persona")
 if pay_df.empty:
     st.info("Agrega tramos para ver saldos.")
 else:
-    # Lo que cada pasajero debe a cada conductor
     owed = pay_df.groupby(["passenger","driver"])["fare"].sum().reset_index(name="monto (CLP)")
+    pivot = owed.pivot_table(index="passenger", columns="driver", values="monto (CLP)", aggfunc="sum", fill_value=0)
+    st.write("**Matriz Pasajero → Conductor (monto a pagar):**")
+    st.dataframe(pivot, use_container_width=True)
 
-    # Totales por pasajero (deuda total) y por conductor (cobro total)
     deuda_por_pasajero = pay_df.groupby("passenger")["fare"].sum().reset_index(name="debe_total (CLP)")
     cobro_por_conductor = pay_df.groupby("driver")["fare"].sum().reset_index(name="cobra_total (CLP)")
-
-    st.write("**Matriz Pasajero → Conductor (monto a pagar):**")
-    pivot = owed.pivot_table(index="passenger", columns="driver", values="monto (CLP)", aggfunc="sum", fill_value=0)
-    st.dataframe(pivot, use_container_width=True)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -241,10 +255,9 @@ else:
         st.write("**Cobro total por conductor:**")
         st.dataframe(cobro_por_conductor.sort_values("cobra_total (CLP)", ascending=False), use_container_width=True)
 
-    # Balance neto por persona (positivos = recibe, negativos = debe)
+    # Balance neto por persona
     personas = sorted(set(DEFAULT_PEOPLE + list(pivot.index) + list(pivot.columns)))
     balance = {p: 0 for p in personas}
-    # Pasajeros pagan (negativo), conductores cobran (positivo)
     for _, r in owed.iterrows():
         balance[r["passenger"]] -= r["monto (CLP)"]
         balance[r["driver"]]    += r["monto (CLP)"]
@@ -255,7 +268,6 @@ else:
 st.markdown("---")
 st.subheader("⬇️ Exportar")
 if not df.empty:
-    # Exportar datos crudos y pagos
     raw_csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("Descargar CSV (tramos)", raw_csv, file_name="trips.csv", mime="text/csv", use_container_width=True)
     if not pay_df.empty:
@@ -263,14 +275,3 @@ if not df.empty:
         st.download_button("Descargar CSV (pagos)", pay_csv, file_name="pagos.csv", mime="text/csv", use_container_width=True)
 else:
     st.caption("No hay datos para exportar aún.")
-
-st.markdown("---")
-with st.expander("ℹ️ Cómo funciona el cálculo", expanded=False):
-    st.write("""
-    - Cada **tramo (Ida o Vuelta)** tiene un costo fijo **por persona** (por defecto $1.250 CLP).
-    - Por cada pasajero registrado en un tramo:
-      - Ese pasajero **debe** el monto del tramo (aparece en *Deuda total por pasajero*).
-      - El **conductor** correspondiente **cobra** ese monto (aparece en *Cobro total por conductor*).
-    - El **balance neto** combina ambos efectos para cada persona (cobros menos deudas).
-    - Puedes ajustar el costo por tramo en la barra lateral.
-    """)
