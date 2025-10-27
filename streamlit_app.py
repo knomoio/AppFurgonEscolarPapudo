@@ -46,7 +46,6 @@ def do_rerun():
             st.experimental_rerun()
 
 # ---------------------------- Sidebar ----------------------------
-
 with st.sidebar:
     st.header("⚙️ Configuración")
 
@@ -60,52 +59,8 @@ with st.sidebar:
     abs_path = os.path.abspath(LOCAL_CSV)
     st.markdown("💾 **Almacenamiento:** CSV local")
     if os.path.exists(LOCAL_CSV):
-        # Ofrecer descarga directa (más confiable que file:// en la nube)
-        try:
-            csv_bytes = open(LOCAL_CSV, "rb").read()
-            # Descarga del archivo actual
-            st.download_button("⬇️ Descargar trips.csv (actual)", data=csv_bytes, file_name="trips.csv", mime="text/csv", use_container_width=True)
-            # Copia de seguridad con fecha
-            from datetime import datetime
-            stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-            st.download_button("🧭 Copia de seguridad (con fecha)", data=csv_bytes, file_name=f"trips_{stamp}.csv", mime="text/csv", use_container_width=True)
-        except Exception:
-            st.caption("No se pudo leer el archivo para descarga.")
+        st.markdown(f"📂 [Abrir trips.csv](file:///{abs_path})")
         st.caption(f"Ruta completa:\n`{abs_path}`")
-        # --- Restaurar desde CSV de respaldo ---
-        st.markdown("#### Restaurar desde respaldo")
-        up = st.file_uploader("Selecciona un CSV de respaldo", type=["csv"], accept_multiple_files=False, key="restore_csv")
-        if up is not None:
-            st.caption("El archivo se validará y reemplazará el dataset actual.")
-            confirm = st.checkbox("Confirmo que deseo **reemplazar** los datos actuales con este respaldo.", key="restore_confirm")
-            if confirm and st.button("🔁 Restaurar ahora", type="secondary", use_container_width=True):
-                try:
-                    import pandas as pd
-                    tmp = pd.read_csv(up, dtype=str).fillna("")
-                    # Validación y normalización de columnas
-                    required = ["row_id","date","leg","driver","passengers","car","notes"]
-                    for c in required:
-                        if c not in tmp.columns:
-                            tmp[c] = ""
-                    # Normalizar tipos
-                    tmp["row_id"] = pd.to_numeric(tmp["row_id"], errors="coerce").fillna(0).astype(int)
-                    if (tmp["row_id"] == 0).any():
-                        # Reasignar IDs si faltan o vienen inválidos
-                        tmp = tmp.drop(columns=["row_id"])
-                        tmp.insert(0, "row_id", range(1, len(tmp)+1))
-                    # Fechas a ISO
-                    tmp["date"] = pd.to_datetime(tmp["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-                    # Auto por defecto = driver si está vacío
-                    tmp["car"] = tmp.apply(lambda r: r["car"] if isinstance(r["car"], str) and r["car"].strip() else r["driver"], axis=1)
-                    # Orden de columnas
-                    tmp = tmp[required]
-                    # Guardar y recargar
-                    save_csv(tmp, LOCAL_CSV)
-                    st.success("Respaldo restaurado correctamente.")
-                    do_rerun()
-                except Exception as e:
-                    st.error(f"No se pudo restaurar el CSV: {e}")
-
     else:
         st.caption("📁 El archivo se creará automáticamente cuando guardes el **primer tramo**.")
         st.caption(f"Ruta prevista:\n`{abs_path}`")
@@ -113,3 +68,208 @@ with st.sidebar:
     st.markdown("---")
     st.write("**Ayuda rápida**")
     st.caption("• Un *tramo* es Ida **o** Vuelta.\n• Selecciona conductor/a y pasajeros transportados en ese tramo.")
+
+# ---------------------------- Cargar o inicializar ----------------------------
+df = load_csv(LOCAL_CSV)
+next_id = int(pd.to_numeric(df["row_id"], errors="coerce").fillna(0).max()) + 1 if not df.empty else 1
+
+# ---------------------------- Agregar tramo ----------------------------
+st.title("🚗 Registro de Traslados — CSV local")
+st.write("Registra cada **tramo (Ida/Vuelta)** indicando **quién conduce** y **a quién transporta**.")
+
+with st.expander("➕ Agregar tramo (Ida/Vuelta)", expanded=True):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        ddate = st.date_input("Fecha", value=date.today())
+        leg = st.selectbox("Tramo", options=["Ida","Vuelta"])
+    with col2:
+        driver = st.selectbox("Conductor/a", options=drivers)
+        car = driver
+    with col3:
+        passengers = st.multiselect("Pasajeros transportados", options=[p for p in people if p != driver])
+        notes = st.text_input("Notas (opcional)", value="")
+
+    add_btn = st.button("Guardar tramo", type="primary", use_container_width=True)
+    if add_btn:
+        if len(passengers) == 0:
+            st.warning("Debes seleccionar al menos un pasajero.")
+        else:
+            new_row = {
+                "row_id": next_id,
+                "date": pd.to_datetime(ddate).strftime("%Y-%m-%d"),
+                "leg": leg,
+                "driver": driver,
+                "passengers": ",".join(passengers),
+                "car": car,
+                "notes": notes.strip()
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_csv(df, LOCAL_CSV)
+            st.success("Tramo guardado.")
+            do_rerun()
+
+# ---------------------------- Registro histórico (Editar/Eliminar) ----------------------------
+st.subheader("📋 Registro histórico")
+hist = df.sort_values(["date","leg","driver"], ascending=[True, True, True]).copy()
+if "Eliminar" not in hist.columns:
+    hist["Eliminar"] = False
+
+display_cols = ["Eliminar","date","leg","driver","passengers","car","notes","row_id"]
+display_cols = [c for c in display_cols if c in hist.columns]
+
+try:
+    col_config = {
+        "leg": st.column_config.SelectboxColumn("Tramo", options=["Ida","Vuelta"]),
+        "driver": st.column_config.SelectboxColumn("Conductor/a", options=drivers),
+        "passengers": st.column_config.TextColumn("Pasajeros (separa por coma)"),
+        "date": st.column_config.TextColumn("Fecha (YYYY-MM-DD)"),
+        "notes": st.column_config.TextColumn("Notas"),
+        "car": st.column_config.TextColumn("Auto"),
+        "row_id": st.column_config.NumberColumn("ID", disabled=True),
+        "Eliminar": st.column_config.CheckboxColumn("Eliminar")
+    }
+except Exception:
+    col_config = {}
+
+edited = st.data_editor(
+    hist[display_cols],
+    use_container_width=True,
+    num_rows="fixed",
+    key="editor_hist",
+    column_config=col_config
+)
+
+col_left, col_right = st.columns([1,1])
+with col_left:
+    save_btn = st.button("💾 Guardar cambios", type="primary", use_container_width=True)
+with col_right:
+    del_btn = st.button("🗑️ Eliminar seleccionados", type="secondary", use_container_width=True)
+
+if save_btn:
+    updated = edited.copy()
+    if "date" in updated.columns:
+        updated["date"] = pd.to_datetime(updated["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    if "car" in updated.columns and "driver" in updated.columns:
+        updated["car"] = updated.apply(lambda r: r["car"] if isinstance(r["car"], str) and r["car"].strip() else r["driver"], axis=1)
+    if "row_id" in updated.columns and "row_id" in df.columns:
+        cols_to_update = [c for c in ["date","leg","driver","passengers","car","notes"] if c in updated.columns and c in df.columns]
+        df = df.set_index("row_id")
+        upd = updated.set_index("row_id")
+        inter = df.index.intersection(upd.index)
+        df.loc[inter, cols_to_update] = upd.loc[inter, cols_to_update]
+        df = df.reset_index()
+        save_csv(df, LOCAL_CSV)
+        st.success("Cambios guardados en CSV.")
+        do_rerun()
+    else:
+        st.error("No se encontró 'row_id' para aplicar cambios.")
+
+if del_btn:
+    to_delete_ids = edited.loc[edited.get("Eliminar", False) == True, "row_id"].tolist() if "row_id" in edited.columns else []
+    if to_delete_ids:
+        new_df = df[~df["row_id"].isin(to_delete_ids)].copy()
+        save_csv(new_df, LOCAL_CSV)
+        st.success(f"Se eliminaron {len(to_delete_ids)} registro(s).")
+        do_rerun()
+    else:
+        st.info("No hay registros marcados para eliminar.")
+
+# ---------------------------- Cálculos y Resúmenes ----------------------------
+def explode_passengers(df_in: pd.DataFrame) -> pd.DataFrame:
+    if df_in.empty:
+        return pd.DataFrame(columns=["date","leg","driver","passenger","fare"])
+    rows = []
+    for _, r in df_in.iterrows():
+        plist = [p.strip() for p in str(r.get("passengers","")).split(",") if p.strip()]
+        for p in plist:
+            rows.append({
+                "date": r["date"],
+                "leg": r["leg"],
+                "driver": r["driver"],
+                "passenger": p,
+                "fare": st.session_state.fare
+            })
+    return pd.DataFrame(rows)
+
+pay_df = explode_passengers(df)
+if not pay_df.empty:
+    pay_df["date"] = pd.to_datetime(pay_df["date"], errors="coerce")
+    pay_df = pay_df.dropna(subset=["date"])
+    pay_df["date"] = pay_df["date"].dt.normalize()
+    pay_df["month"] = pay_df["date"].dt.to_period("M").astype(str)
+
+colA, colB, colC = st.columns(3)
+with colA:
+    st.markdown("### 📅 Hoy")
+    if pay_df.empty:
+        st.info("Sin registros hoy.")
+    else:
+        today_ts = pd.Timestamp.today().normalize()
+        today_df = pay_df[pay_df["date"] == today_ts]
+        if today_df.empty:
+            st.info("Sin registros hoy.")
+        else:
+            st.metric("Total cobrado por conductores (hoy)", f"$ {int(today_df['fare'].sum()):,}".replace(",", "."))
+            st.dataframe(today_df.groupby("driver")["fare"].sum().reset_index(name="cobro_hoy (CLP)"), use_container_width=True)
+
+with colB:
+    st.markdown("### 🗓️ Mes actual")
+    if pay_df.empty:
+        st.info("Sin registros este mes.")
+    else:
+        month_key = pd.Timestamp.today().strftime("%Y-%m")
+        month_df = pay_df[pay_df["month"] == month_key]
+        if month_df.empty:
+            st.info("Sin registros este mes.")
+        else:
+            st.metric("Total cobrado (mes)", f"$ {int(month_df['fare'].sum()):,}".replace(",", "."))
+            st.dataframe(month_df.groupby("driver")["fare"].sum().reset_index(name="cobro_mes (CLP)"), use_container_width=True)
+
+with colC:
+    st.markdown("### 🧮 Acumulado")
+    if pay_df.empty:
+        st.info("Sin registros.")
+    else:
+        st.metric("Total acumulado", f"$ {int(pay_df['fare'].sum()):,}".replace(",", "."))
+        st.dataframe(pay_df.groupby("driver")["fare"].sum().reset_index(name="cobro_total (CLP)"), use_container_width=True)
+
+st.markdown("---")
+st.subheader("💰 Saldos por persona")
+if pay_df.empty:
+    st.info("Agrega tramos para ver saldos.")
+else:
+    owed = pay_df.groupby(["passenger","driver"])["fare"].sum().reset_index(name="monto (CLP)")
+    pivot = owed.pivot_table(index="passenger", columns="driver", values="monto (CLP)", aggfunc="sum", fill_value=0)
+    st.write("**Matriz Pasajero → Conductor (monto a pagar):**")
+    st.dataframe(pivot, use_container_width=True)
+
+    deuda_por_pasajero = pay_df.groupby("passenger")["fare"].sum().reset_index(name="debe_total (CLP)")
+    cobro_por_conductor = pay_df.groupby("driver")["fare"].sum().reset_index(name="cobra_total (CLP)")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Deuda total por pasajero:**")
+        st.dataframe(deuda_por_pasajero.sort_values("debe_total (CLP)", ascending=False), use_container_width=True)
+    with col2:
+        st.write("**Cobro total por conductor:**")
+        st.dataframe(cobro_por_conductor.sort_values("cobra_total (CLP)", ascending=False), use_container_width=True)
+
+    personas = sorted(set(DEFAULT_PEOPLE + list(pivot.index) + list(pivot.columns)))
+    balance = {p: 0 for p in personas}
+    for _, r in owed.iterrows():
+        balance[r["passenger"]] -= r["monto (CLP)"]
+        balance[r["driver"]] += r["monto (CLP)"]
+    bal_df = pd.DataFrame([{"persona": k, "balance_neto (CLP)": v} for k, v in balance.items() if k != ""])
+    st.write("**Balance neto por persona (positivo = recibir, negativo = pagar):**")
+    st.dataframe(bal_df.sort_values("balance_neto (CLP)", ascending=False), use_container_width=True)
+
+st.markdown("---")
+st.subheader("⬇️ Exportar")
+if not df.empty:
+    raw_csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Descargar CSV (tramos)", raw_csv, file_name="trips.csv", mime="text/csv", use_container_width=True)
+    if not pay_df.empty:
+        pay_csv = pay_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Descargar CSV (pagos)", pay_csv, file_name="pagos.csv", mime="text/csv", use_container_width=True)
+else:
+    st.caption("No hay datos para exportar aún.")
