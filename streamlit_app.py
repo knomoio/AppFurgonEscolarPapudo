@@ -1,4 +1,3 @@
-
 # streamlit_app.py — Registro de Traslados Papudo ↔ La Ligua
 import os, io, json
 from datetime import datetime, date
