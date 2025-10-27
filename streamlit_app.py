@@ -4,6 +4,17 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+# Helper para compatibilidad de versiones
+def do_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        # Compatibilidad con versiones antiguas
+        if hasattr(st, 'experimental_rerun'):
+            do_rerun()
+        else:
+            pass
+
 # ---------------------------- Config ----------------------------
 st.set_page_config(page_title="Registro de Traslados — CSV local", layout="wide")
 
@@ -97,7 +108,7 @@ with st.expander("➕ Agregar tramo (Ida/Vuelta)", expanded=True):
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             save_csv(df, LOCAL_CSV)
             st.success("Tramo guardado.")
-            st.experimental_rerun()
+            do_rerun()
 
 # ---------------------------- Registro histórico (Editar/Eliminar) ----------------------------
 st.subheader("📋 Registro histórico")
@@ -157,7 +168,7 @@ if save_btn:
         df = df.reset_index()
         save_csv(df, LOCAL_CSV)
         st.success("Cambios guardados en CSV.")
-        st.experimental_rerun()
+        do_rerun()
     else:
         st.error("No se encontró 'row_id' para aplicar cambios.")
 
@@ -168,7 +179,7 @@ if del_btn:
         new_df = df[~df["row_id"].isin(to_delete_ids)].copy()
         save_csv(new_df, LOCAL_CSV)
         st.success(f"Se eliminaron {len(to_delete_ids)} registro(s).")
-        st.experimental_rerun()
+        do_rerun()
     else:
         st.info("No hay registros marcados para eliminar.")
 
