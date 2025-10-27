@@ -1,19 +1,8 @@
-# streamlit_app.py — Registro de Traslados (CSV local únicamente)
+# streamlit_app.py — Registro de Traslados (CSV local con enlace directo)
 import os
 from datetime import date
 import pandas as pd
 import streamlit as st
-
-# Helper para compatibilidad de versiones
-def do_rerun():
-    try:
-        st.rerun()
-    except Exception:
-        # Compatibilidad con versiones antiguas
-        if hasattr(st, 'experimental_rerun'):
-            do_rerun()
-        else:
-            pass
 
 # ---------------------------- Config ----------------------------
 st.set_page_config(page_title="Registro de Traslados — CSV local", layout="wide")
@@ -25,7 +14,7 @@ DEFAULT_FARE_CLP = 1250  # costo por tramo (Ida o Vuelta) por persona
 
 LOCAL_CSV = "trips.csv"  # archivo local
 
-# ---------------------------- Helpers: CSV Storage ----------------------------
+# ---------------------------- Helpers ----------------------------
 def load_csv(path: str) -> pd.DataFrame:
     if os.path.exists(path):
         try:
@@ -34,11 +23,9 @@ def load_csv(path: str) -> pd.DataFrame:
             df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
     else:
         df = pd.DataFrame(columns=["row_id","date","leg","driver","passengers","car","notes"])
-    # Asegurar columnas
     for c in ["row_id","date","leg","driver","passengers","car","notes"]:
         if c not in df.columns:
             df[c] = ""
-    # Forzar row_id numérico si existe
     if not df.empty:
         df["row_id"] = pd.to_numeric(df["row_id"], errors="coerce").fillna(0).astype(int)
     return df
@@ -51,31 +38,42 @@ def save_csv(df: pd.DataFrame, path: str):
     df = df[base_cols].copy()
     df.to_csv(path, index=False, encoding="utf-8")
 
-# ---------------------------- State & Sidebar ----------------------------
-if "fare" not in st.session_state:
-    st.session_state.fare = DEFAULT_FARE_CLP
+def do_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        if hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
 
+# ---------------------------- Sidebar ----------------------------
 with st.sidebar:
     st.header("⚙️ Configuración")
-    fare = st.number_input("Costo por tramo (CLP/persona)", min_value=0, value=st.session_state.fare, step=50)
+
+    fare = st.number_input("Costo por tramo (CLP/persona)", min_value=0, value=DEFAULT_FARE_CLP, step=50)
     st.session_state.fare = int(fare)
     drivers = st.multiselect("Conductores", DEFAULT_DRIVERS, default=DEFAULT_DRIVERS)
     people  = st.multiselect("Personas", DEFAULT_PEOPLE, default=DEFAULT_PEOPLE)
-    st.caption("💾 Almacenamiento: CSV local")
-    st.caption(f"Archivo: {LOCAL_CSV}")
+
+    st.markdown("---")
+
+    abs_path = os.path.abspath(LOCAL_CSV)
+    st.markdown("💾 **Almacenamiento:** CSV local")
+    if os.path.exists(LOCAL_CSV):
+        st.markdown(f"📂 [Abrir trips.csv](file:///{abs_path})")
+        st.caption(f"Ruta completa:\n`{abs_path}`")
+    else:
+        st.caption("📁 El archivo se creará automáticamente cuando guardes el **primer tramo**.")
+        st.caption(f"Ruta prevista:\n`{abs_path}`")
+
     st.markdown("---")
     st.write("**Ayuda rápida**")
     st.caption("• Un *tramo* es Ida **o** Vuelta.\n• Selecciona conductor/a y pasajeros transportados en ese tramo.")
 
+# ---------------------------- Cargar o inicializar ----------------------------
 df = load_csv(LOCAL_CSV)
+next_id = int(pd.to_numeric(df["row_id"], errors="coerce").fillna(0).max()) + 1 if not df.empty else 1
 
-# Garantizar columna identificadora estable para poder borrar/editar filas
-if df.empty:
-    next_id = 1
-else:
-    next_id = int(pd.to_numeric(df["row_id"], errors="coerce").fillna(0).max()) + 1
-
-# ---------------------------- UI: Alta de Viajes ----------------------------
+# ---------------------------- Agregar tramo ----------------------------
 st.title("🚗 Registro de Traslados — CSV local")
 st.write("Registra cada **tramo (Ida/Vuelta)** indicando **quién conduce** y **a quién transporta**.")
 
@@ -86,7 +84,7 @@ with st.expander("➕ Agregar tramo (Ida/Vuelta)", expanded=True):
         leg = st.selectbox("Tramo", options=["Ida","Vuelta"])
     with col2:
         driver = st.selectbox("Conductor/a", options=drivers)
-        car = driver  # auto asociado al conductor
+        car = driver
     with col3:
         passengers = st.multiselect("Pasajeros transportados", options=[p for p in people if p != driver])
         notes = st.text_input("Notas (opcional)", value="")
@@ -119,7 +117,6 @@ if "Eliminar" not in hist.columns:
 display_cols = ["Eliminar","date","leg","driver","passengers","car","notes","row_id"]
 display_cols = [c for c in display_cols if c in hist.columns]
 
-# Column config
 try:
     col_config = {
         "leg": st.column_config.SelectboxColumn("Tramo", options=["Ida","Vuelta"]),
@@ -148,21 +145,16 @@ with col_left:
 with col_right:
     del_btn = st.button("🗑️ Eliminar seleccionados", type="secondary", use_container_width=True)
 
-# Guardar cambios editados
 if save_btn:
     updated = edited.copy()
-    # Validaciones y normalizaciones
     if "date" in updated.columns:
         updated["date"] = pd.to_datetime(updated["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    # Auto por defecto = driver si viene vacío
     if "car" in updated.columns and "driver" in updated.columns:
         updated["car"] = updated.apply(lambda r: r["car"] if isinstance(r["car"], str) and r["car"].strip() else r["driver"], axis=1)
-    # Aplicar cambios por row_id
     if "row_id" in updated.columns and "row_id" in df.columns:
         cols_to_update = [c for c in ["date","leg","driver","passengers","car","notes"] if c in updated.columns and c in df.columns]
         df = df.set_index("row_id")
         upd = updated.set_index("row_id")
-        # Solo actualizar ids que existan
         inter = df.index.intersection(upd.index)
         df.loc[inter, cols_to_update] = upd.loc[inter, cols_to_update]
         df = df.reset_index()
@@ -172,7 +164,6 @@ if save_btn:
     else:
         st.error("No se encontró 'row_id' para aplicar cambios.")
 
-# Eliminar registros seleccionados
 if del_btn:
     to_delete_ids = edited.loc[edited.get("Eliminar", False) == True, "row_id"].tolist() if "row_id" in edited.columns else []
     if to_delete_ids:
@@ -182,8 +173,6 @@ if del_btn:
         do_rerun()
     else:
         st.info("No hay registros marcados para eliminar.")
-
-st.markdown("---")
 
 # ---------------------------- Cálculos y Resúmenes ----------------------------
 def explode_passengers(df_in: pd.DataFrame) -> pd.DataFrame:
@@ -203,7 +192,6 @@ def explode_passengers(df_in: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 pay_df = explode_passengers(df)
-# Totales por día / mes / acumulado
 if not pay_df.empty:
     pay_df["date"] = pd.to_datetime(pay_df["date"], errors="coerce")
     pay_df = pay_df.dropna(subset=["date"])
@@ -266,12 +254,11 @@ else:
         st.write("**Cobro total por conductor:**")
         st.dataframe(cobro_por_conductor.sort_values("cobra_total (CLP)", ascending=False), use_container_width=True)
 
-    # Balance neto por persona
     personas = sorted(set(DEFAULT_PEOPLE + list(pivot.index) + list(pivot.columns)))
     balance = {p: 0 for p in personas}
     for _, r in owed.iterrows():
         balance[r["passenger"]] -= r["monto (CLP)"]
-        balance[r["driver"]]    += r["monto (CLP)"]
+        balance[r["driver"]] += r["monto (CLP)"]
     bal_df = pd.DataFrame([{"persona": k, "balance_neto (CLP)": v} for k, v in balance.items() if k != ""])
     st.write("**Balance neto por persona (positivo = recibir, negativo = pagar):**")
     st.dataframe(bal_df.sort_values("balance_neto (CLP)", ascending=False), use_container_width=True)
