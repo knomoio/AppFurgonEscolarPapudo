@@ -205,7 +205,7 @@ with st.expander("➕ Agregar viaje", expanded=True):
                     "monto_al_conductor": monto,
                 })
             _append_rows(rows)
-            st.success(f"Se registró {tipo} — Conductor: {conductor} — Pasajeros: {', '.join(pasajeros)}")}")
+            st.success(f"Se registró {tipo} — Conductor: {conductor} — Pasajeros: {', '.join(pasajeros)}")
 
 # ---------------------------- Historial + Filtros ----------------------------
 st.subheader("📜 Historial de viajes")
