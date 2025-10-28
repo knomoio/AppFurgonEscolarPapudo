@@ -26,6 +26,19 @@ st.set_page_config(
 PARTICIPANTES: List[str] = ["JP", "Gerard", "Paula", "Wilson", "Valentina"]
 CONDUCTORES: List[str] = ["Wilson", "Valentina"]
 
+# Columnas y claves
+COLS = [
+    "id",               # int autoincremental
+    "fecha",            # yyyy-mm-dd
+    "conductor",        # Wilson | Valentina
+    "tramo",            # Ida | Vuelta
+    "pasajeros",        # lista separada por ; (sin el conductor)
+    "tarifa_por_tramo", # CLP por persona por tramo
+    "n_pasajeros",      # int
+    "monto_al_conductor"# CLP (tarifa * n_pasajeros)
+]
+
+
 # ---------------------------- Helpers (definidos antes de ser usados) ----------------------------
 
 def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -66,47 +79,27 @@ def _pivot_pasajero_conductor(expl: pd.DataFrame) -> pd.DataFrame:
 def _append_rows(rows: List[dict]):
     if not rows:
         return
+    # Asignar IDs autoincrementales
+    for r in rows:
+        r["id"] = st.session_state.next_id
+        st.session_state.next_id += 1
     df_new = pd.DataFrame(rows)
     st.session_state.data = pd.concat([st.session_state.data, df_new], ignore_index=True)
 
 
 def _init_state():
     if "data" not in st.session_state:
-        st.session_state.data = pd.DataFrame(
-            columns=[
-                "fecha",            # yyyy-mm-dd
-                "conductor",        # Wilson | Valentina
-                "tramo",            # Ida | Vuelta
-                "pasajeros",        # lista separada por ; (sin el conductor)
-                "tarifa_por_tramo", # CLP por persona por tramo
-                "n_pasajeros",      # int
-                "monto_al_conductor"# CLP (tarifa * n_pasajeros)
-            ]
-        )
+        st.session_state.data = pd.DataFrame(columns=COLS)
+    # IDs
+    if "next_id" not in st.session_state:
+        if "id" in st.session_state.data.columns and not st.session_state.data.empty:
+            st.session_state.next_id = int(pd.to_numeric(st.session_state.data["id"], errors="coerce").fillna(0).max()) + 1
+        else:
+            st.session_state.next_id = 1
     if "cfg_tarifa" not in st.session_state:
         st.session_state.cfg_tarifa = 1250  # CLP por persona por tramo
     if "cfg_incluir_conductor" not in st.session_state:
         st.session_state.cfg_incluir_conductor = False  # por defecto, el conductor NO paga
-
-
-# ---------------------------- Sidebar (config & archivos) ----------------------------
-_init_state()
-st.sidebar.header("⚙️ Configuración")
-colA, colB = st.sidebar.columns(2)
-with colA:
-    tarifa_default = st.number_input(
-        "Tarifa por tramo (CLP)",
-        min_value=0,
-        step=50,
-        value=st.session_state.cfg_tarifa,
-        help="Monto que paga cada pasajero por cada tramo (Ida o Vuelta)."
-    )
-with colB:
-    incluir_conductor = st.checkbox(
-        "Incluir conductor en prorrateo",
-        value=st.session_state.cfg_incluir_conductor,
-        help="Si está activado, el conductor también paga su propio cupo. Por defecto no."
-    )
 
 # Persistimos configuración
 st.session_state.cfg_tarifa = tarifa_default
@@ -119,8 +112,22 @@ if up is not None:
     try:
         df_up = pd.read_csv(up)
         df_up = _clean_df(df_up)
-        st.session_state.data = df_up
-        st.sidebar.success("Archivo cargado correctamente.")
+        # Asegurar columnas e IDs
+        for c in COLS:
+            if c not in df_up.columns:
+                df_up[c] = None
+        # Si no hay id, generar
+        if df_up["id"].isna().all() or (df_up["id"].astype(str) == "").all():
+            if "id" in df_up.columns:
+                df_up = df_up.drop(columns=["id"])
+            df_up.insert(0, "id", range(st.session_state.next_id, st.session_state.next_id + len(df_up)))
+            st.session_state.next_id += len(df_up)
+        else:
+            # Mantener next_id coherente
+            max_id = int(pd.to_numeric(df_up["id"], errors="coerce").fillna(0).max())
+            st.session_state.next_id = max(st.session_state.next_id, max_id + 1)
+        st.session_state.data = df_up[COLS]
+        st.sidebar.success("Archivo cargado correctamente.")("Archivo cargado correctamente.")
     except Exception as e:
         st.sidebar.error(f"No se pudo importar el CSV: {e}")
 
@@ -132,6 +139,8 @@ st.sidebar.download_button(
     file_name="traslados_papudo_laligua.csv",
     mime="text/csv",
 )
+
+st.sidebar.caption("*El CSV incluye la columna* `id` *para poder editar/eliminar con seguridad.*")
 
 # Exportar a Excel con hojas (Datos, Resumen por Conductor, Resumen por Persona, Matriz)
 if st.sidebar.button("⬇️ Exportar Excel (con resúmenes)"):
@@ -173,12 +182,10 @@ with st.expander("➕ Agregar viaje", expanded=True):
     with c4:
         tarifa = st.number_input("Tarifa por tramo (CLP)", min_value=0, step=50, value=st.session_state.cfg_tarifa)
 
-    # Pasajeros (por defecto, sugerimos los NO conductores; si el conductor participa del prorrateo, puede elegirse)
     opciones_pasajeros = [p for p in PARTICIPANTES if (st.session_state.cfg_incluir_conductor or p != conductor)]
     default_pasajeros = [p for p in opciones_pasajeros if p != conductor]
     pasajeros = st.multiselect("Pasajeros que viajaron en este auto", opciones_pasajeros, default=default_pasajeros)
 
-    # Validación: al menos 1 pasajero
     if st.button("Agregar al registro"):
         if len(pasajeros) == 0:
             st.warning("Debes seleccionar al menos 1 pasajero (aparte del conductor) o activar 'Incluir conductor'.")
@@ -198,7 +205,7 @@ with st.expander("➕ Agregar viaje", expanded=True):
                     "monto_al_conductor": monto,
                 })
             _append_rows(rows)
-            st.success(f"Se registró {tipo} — Conductor: {conductor} — Pasajeros: {', '.join(pasajeros)}")
+            st.success(f"Se registró {tipo} — Conductor: {conductor} — Pasajeros: {', '.join(pasajeros)}")}")
 
 # ---------------------------- Historial + Filtros ----------------------------
 st.subheader("📜 Historial de viajes")
@@ -221,7 +228,50 @@ if usar_filtros and hasta:
 if filtro_conductor:
     _df = _df[_df["conductor"].isin(filtro_conductor)]
 
-st.dataframe(_df.sort_values(["fecha", "conductor", "tramo"]).reset_index(drop=True), use_container_width=True)
+_df = _df.sort_values(["fecha", "conductor", "tramo"]).reset_index(drop=True)
+st.dataframe(_df, use_container_width=True)
+
+# -------- Acciones: Eliminar y Editar --------
+st.markdown("### 🗑️ Eliminar filas")
+ids_disp = _df["id"].tolist()
+sel_del = st.multiselect("Selecciona IDs a eliminar", ids_disp, placeholder="IDs…")
+if st.button("Eliminar seleccionadas") and sel_del:
+    before = len(st.session_state.data)
+    st.session_state.data = st.session_state.data[~st.session_state.data["id"].isin(sel_del)].reset_index(drop=True)
+    st.success(f"Eliminadas {before - len(st.session_state.data)} filas (por ID).")
+
+st.markdown("### ✏️ Editar fila")
+edit_id = st.selectbox("ID a editar", ids_disp, placeholder="Elige un ID") if ids_disp else None
+if edit_id is not None:
+    row = st.session_state.data.loc[st.session_state.data["id"] == edit_id].iloc[0]
+    c1,c2,c3,c4 = st.columns([1,1,1,2])
+    with c1:
+        e_fecha = st.date_input("Fecha (edición)", value=pd.to_datetime(row["fecha"]).date() if pd.notna(row["fecha"]) else date.today(), format="DD/MM/YYYY", key=f"e_fecha_{edit_id}")
+    with c2:
+        e_conductor = st.selectbox("Conductor (edición)", CONDUCTORES, index=CONDUCTORES.index(row["conductor"]) if row["conductor"] in CONDUCTORES else 0, key=f"e_cond_{edit_id}")
+    with c3:
+        e_tramo = st.selectbox("Tramo (edición)", ["Ida", "Vuelta"], index=0 if row["tramo"]=="Ida" else 1, key=f"e_tramo_{edit_id}")
+    with c4:
+        e_tarifa = st.number_input("Tarifa por tramo (edición)", min_value=0, step=50, value=int(row["tarifa_por_tramo"]) if pd.notna(row["tarifa_por_tramo"]) else st.session_state.cfg_tarifa, key=f"e_tarifa_{edit_id}")
+
+    actuales = [p for p in str(row["pasajeros"]).split(";") if p]
+    opciones_pas = [p for p in PARTICIPANTES if (st.session_state.cfg_incluir_conductor or p != e_conductor)]
+    e_pasajeros = st.multiselect("Pasajeros (edición)", opciones_pas, default=[p for p in actuales if p in opciones_pas], key=f"e_pas_{edit_id}")
+
+    if st.button("Guardar cambios", key=f"save_{edit_id}"):
+        n_p = len(e_pasajeros)
+        monto = int(e_tarifa) * n_p
+        idx = st.session_state.data.index[st.session_state.data["id"] == edit_id][0]
+        st.session_state.data.loc[idx, ["fecha","conductor","tramo","pasajeros","tarifa_por_tramo","n_pasajeros","monto_al_conductor"]] = [
+            e_fecha,
+            e_conductor,
+            e_tramo,
+            ";".join(e_pasajeros),
+            int(e_tarifa),
+            n_p,
+            monto,
+        ]
+        st.success(f"Fila ID {edit_id} actualizada.").reset_index(drop=True), use_container_width=True)
 
 # ---------------------------- Resúmenes ----------------------------
 st.subheader("📈 Resúmenes")
