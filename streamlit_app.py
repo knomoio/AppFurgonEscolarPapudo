@@ -258,11 +258,19 @@ if edit_id is not None:
     opciones_pas = [p for p in PARTICIPANTES if (st.session_state.cfg_incluir_conductor or p != e_conductor)]
     e_pasajeros = st.multiselect("Pasajeros (edición)", opciones_pas, default=[p for p in actuales if p in opciones_pas], key=f"e_pas_{edit_id}")
 
-    if st.button("Guardar cambios", key=f"save_{edit_id}"):
+        if st.button("Guardar cambios", key=f"save_{edit_id}"):
         n_p = len(e_pasajeros)
         monto = int(e_tarifa) * n_p
         idx = st.session_state.data.index[st.session_state.data["id"] == edit_id][0]
-        st.session_state.data.loc[idx, ["fecha","conductor","tramo","pasajeros","tarifa_por_tramo","n_pasajeros","monto_al_conductor"]] = [
+        st.session_state.data.loc[idx, [
+            "fecha",
+            "conductor",
+            "tramo",
+            "pasajeros",
+            "tarifa_por_tramo",
+            "n_pasajeros",
+            "monto_al_conductor"
+        ]] = [
             e_fecha,
             e_conductor,
             e_tramo,
@@ -271,7 +279,7 @@ if edit_id is not None:
             n_p,
             monto,
         ]
-        st.success(f"Fila ID {edit_id} actualizada.").reset_index(drop=True), use_container_width=True)
+        st.success(f"Fila ID {edit_id} actualizada.")
 
 # ---------------------------- Resúmenes ----------------------------
 st.subheader("📈 Resúmenes")
