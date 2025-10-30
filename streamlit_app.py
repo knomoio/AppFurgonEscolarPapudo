@@ -146,7 +146,10 @@ if up is not None:
         st.sidebar.error(f"No se pudo importar el CSV: {e}")
 
 # Descargar CSV actual
-csv_bytes = _clean_df(st.session_state.data).to_csv(index=False).encode("utf-8")
+_df_export = _clean_df(st.session_state.data).copy()
+if not _df_export.empty:
+    _df_export["id"] = pd.to_numeric(_df_export["id"], errors="coerce").fillna(0).astype(int)
+csv_bytes = _df_export.to_csv(index=False).encode("utf-8")
 st.sidebar.download_button(
     label="💾 Descargar CSV",
     data=csv_bytes,
@@ -157,29 +160,45 @@ st.sidebar.download_button(
 st.sidebar.caption("*El CSV incluye la columna* `id` *para poder editar/eliminar con seguridad.*")
 
 # Exportar Excel con hojas (Datos, Resumenes)
+# Verificar dependencia
+try:
+    import openpyxl  # type: ignore
+    _has_openpyxl = True
+except Exception:
+    _has_openpyxl = False
+
+if not _has_openpyxl:
+    st.sidebar.error("Para exportar a Excel instala la librería: pip install openpyxl")
+
 if st.sidebar.button("⬇️ Exportar Excel (con resúmenes)"):
-    try:
-        df = _clean_df(st.session_state.data)
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Datos")
+    if not _has_openpyxl:
+        st.sidebar.warning("Instala openpyxl y vuelve a intentar.")
+    else:
+        try:
+            df = _clean_df(st.session_state.data)
+            # Asegurar 'id' int para una exportación limpia
             if not df.empty:
-                df_sum_conductor = df.groupby("conductor", as_index=False)["monto_al_conductor"].sum().rename(columns={"monto_al_conductor": "Total a cobrar"})
-                expl = _explode_pasajeros(df)
-                df_sum_persona = expl.groupby("pasajero", as_index=False)["monto"].sum().rename(columns={"monto": "Total adeudado"})
-                matriz = _pivot_pasajero_conductor(expl)
-                df_sum_conductor.to_excel(writer, index=False, sheet_name="Resumen Conductor")
-                df_sum_persona.to_excel(writer, index=False, sheet_name="Resumen Persona")
-                matriz.to_excel(writer, sheet_name="Matriz Pasajero→Conductor")
-        st.sidebar.download_button(
-            label="Descargar Excel",
-            data=output.getvalue(),
-            file_name="traslados_papudo_laligua.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_xlsx",
-        )
-    except Exception as e:
-        st.sidebar.error(f"No se pudo generar el Excel: {e}")
+                df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="Datos")
+                if not df.empty:
+                    df_sum_conductor = df.groupby("conductor", as_index=False)["monto_al_conductor"].sum().rename(columns={"monto_al_conductor": "Total a cobrar"})
+                    expl = _explode_pasajeros(df)
+                    df_sum_persona = expl.groupby("pasajero", as_index=False)["monto"].sum().rename(columns={"monto": "Total adeudado"})
+                    matriz = _pivot_pasajero_conductor(expl)
+                    df_sum_conductor.to_excel(writer, index=False, sheet_name="Resumen Conductor")
+                    df_sum_persona.to_excel(writer, index=False, sheet_name="Resumen Persona")
+                    matriz.to_excel(writer, sheet_name="Matriz Pasajero→Conductor")
+            st.sidebar.download_button(
+                label="Descargar Excel",
+                data=output.getvalue(),
+                file_name="traslados_papudo_laligua.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_xlsx",
+            )
+        except Exception as e:
+            st.sidebar.error(f"No se pudo generar el Excel: {e}")
 
 # ---------------------------- Ingreso de viajes ----------------------------
 st.title("🚗 Registro de Traslados — Papudo ↔ La Ligua")
@@ -248,12 +267,17 @@ st.dataframe(_df, use_container_width=True)
 
 # -------- Acciones: Eliminar y Editar --------
 st.markdown("### 🗑️ Eliminar filas")
+# Asegurar tipo int para comparaciones seguras
+if not st.session_state.data.empty:
+    st.session_state.data["id"] = pd.to_numeric(st.session_state.data["id"], errors="coerce").fillna(0).astype(int)
+
 ids_disp = _df["id"].dropna().astype(int).tolist()
 sel_del = st.multiselect("Selecciona IDs a eliminar", ids_disp, placeholder="IDs…")
 if st.button("Eliminar seleccionadas") and sel_del:
     before = len(st.session_state.data)
     st.session_state.data = st.session_state.data[~st.session_state.data["id"].isin(sel_del)].reset_index(drop=True)
     st.success(f"Eliminadas {before - len(st.session_state.data)} filas (por ID).")
+    st.rerun()
 
 st.markdown("### ✏️ Editar fila")
 edit_id = st.selectbox("ID a editar", ids_disp, placeholder="Elige un ID") if ids_disp else None
@@ -322,6 +346,7 @@ if edit_id is not None:
             monto,
         ]
         st.success(f"Fila ID {edit_id} actualizada.")
+        st.rerun()
 
 # ---------------------------- Resúmenes ----------------------------
 st.subheader("📈 Resúmenes")
