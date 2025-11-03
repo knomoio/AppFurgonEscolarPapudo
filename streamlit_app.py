@@ -175,27 +175,35 @@ st.sidebar.download_button(
 st.sidebar.caption("*El CSV incluye la columna* `id` *para poder editar/eliminar con seguridad.*")
 
 # Exportar Excel con hojas (Datos, Resumenes)
-# Verificar dependencia
+# Detección de motor Excel (openpyxl o xlsxwriter)
+_engine_excel = None
+_excel_hint = None
 try:
     import openpyxl  # type: ignore
-    _has_openpyxl = True
+    _engine_excel = "openpyxl"
 except Exception:
-    _has_openpyxl = False
+    try:
+        import xlsxwriter  # type: ignore
+        _engine_excel = "xlsxwriter"
+    except Exception:
+        _engine_excel = None
+        _excel_hint = "Instala uno de estos: pip install openpyxl  —o—  pip install XlsxWriter"
 
-if not _has_openpyxl:
-    st.sidebar.error("Para exportar a Excel instala la librería: pip install openpyxl")
+if _engine_excel is None:
+    st.sidebar.error("Para exportar a Excel instala una librería de Excel. " + (_excel_hint or ""))
+else:
+    st.sidebar.success(f"Motor Excel disponible: {_engine_excel}")
 
 if st.sidebar.button("⬇️ Exportar Excel (con resúmenes)"):
-    if not _has_openpyxl:
-        st.sidebar.warning("Instala openpyxl y vuelve a intentar.")
+    if _engine_excel is None:
+        st.sidebar.warning("Instala openpyxl o XlsxWriter y vuelve a intentar.")
     else:
         try:
             df = _clean_df(st.session_state.data)
-            # Asegurar 'id' int para una exportación limpia
             if not df.empty:
                 df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
             output = io.BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            with pd.ExcelWriter(output, engine=_engine_excel) as writer:
                 df.to_excel(writer, index=False, sheet_name="Datos")
                 if not df.empty:
                     df_sum_conductor = df.groupby("conductor", as_index=False)["monto_al_conductor"].sum().rename(columns={"monto_al_conductor": "Total a cobrar"})
