@@ -127,23 +127,37 @@ st.session_state.cfg_incluir_conductor = bool(incluir_conductor)
 
 st.sidebar.divider()
 st.sidebar.subheader("📁 Importar / Exportar")
-up = st.sidebar.file_uploader("Importar CSV de viajes", type=["csv"], help="Debe contener columnas compatibles.")
+# ⬇️ Importación controlada por botón para evitar que el uploader reescriba el estado en cada rerun
+up = st.sidebar.file_uploader(
+    "Importar CSV de viajes",
+    type=["csv"],
+    help="Seleccione el archivo y luego presione 'Cargar CSV en memoria' para aplicar.",
+    key="u_csv",
+)
+if "csv_loaded_once" not in st.session_state:
+    st.session_state.csv_loaded_once = False
+
 if up is not None:
-    try:
-        df_up = pd.read_csv(up)
-        df_up = _clean_df(df_up)
-        # IDs coherentes
-        if df_up["id"].isna().all():
-            df_up = df_up.drop(columns=["id"]) if "id" in df_up.columns else df_up
-            df_up.insert(0, "id", range(st.session_state.next_id, st.session_state.next_id + len(df_up)))
-            st.session_state.next_id += len(df_up)
-        else:
-            max_id = int(pd.to_numeric(df_up["id"], errors="coerce").fillna(0).max())
-            st.session_state.next_id = max(st.session_state.next_id, max_id + 1)
-        st.session_state.data = _clean_df(df_up)
-        st.sidebar.success("Archivo cargado correctamente.")
-    except Exception as e:
-        st.sidebar.error(f"No se pudo importar el CSV: {e}")
+    st.sidebar.info(f"Archivo seleccionado: {up.name}")
+    if st.sidebar.button("Cargar CSV en memoria", key="btn_load_csv"):
+        try:
+            df_up = pd.read_csv(up)
+            df_up = _clean_df(df_up)
+            # IDs coherentes
+            if df_up["id"].isna().all():
+                if "id" in df_up.columns:
+                    df_up = df_up.drop(columns=["id"]) 
+                df_up.insert(0, "id", range(st.session_state.next_id, st.session_state.next_id + len(df_up)))
+                st.session_state.next_id += len(df_up)
+            else:
+                max_id = int(pd.to_numeric(df_up["id"], errors="coerce").fillna(0).max())
+                st.session_state.next_id = max(st.session_state.next_id, max_id + 1)
+            st.session_state.data = _clean_df(df_up)
+            st.session_state.csv_loaded_once = True
+            st.sidebar.success("Archivo cargado en memoria correctamente.")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"No se pudo importar el CSV: {e}")
 
 # Descargar CSV actual
 _df_export = _clean_df(st.session_state.data).copy()
@@ -155,6 +169,7 @@ st.sidebar.download_button(
     data=csv_bytes,
     file_name="traslados_papudo_laligua.csv",
     mime="text/csv",
+    key="btn_dl_csv",
 )
 
 st.sidebar.caption("*El CSV incluye la columna* `id` *para poder editar/eliminar con seguridad.*")
