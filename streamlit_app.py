@@ -1,12 +1,13 @@
 # streamlit_app.py — Registro de Traslados Papudo ↔ La Ligua
-# Autor: Asistente de Wilson — 2025-10-28 (versión consolidada con edición y eliminación)
+# Autor: Asistente de Wilson — 2025-11-17 (edición, eliminación, Excel y Google Sheets con autoguardado)
 # Características:
 # - Ingresar viajes (Ida, Vuelta, Ida y Vuelta) con conductor y pasajeros
 # - Tarifa configurable por tramo y opción de incluir al conductor en el prorrateo
 # - Historial con filtros por fecha y conductor
 # - Editar y eliminar filas con IDs autoincrementales
 # - Resúmenes: total por conductor, total adeudado por persona y matriz Pasajero→Conductor
-# - Importar/Exportar CSV y exportar Excel con hojas de datos y resúmenes
+# - Importar/Exportar CSV y exportar Excel con hojas de datos y resúmenes (openpyxl o XlsxWriter)
+# - Sincronización manual y autoguardado con Google Sheets (gspread + google-auth)
 
 import io
 from datetime import date
@@ -46,7 +47,7 @@ def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = None
     # Tipos
-    df["id"] = pd.to_numeric(df["id"], errors="coerce").astype('Int64')
+    df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce").dt.date
     df["tarifa_por_tramo"] = pd.to_numeric(df["tarifa_por_tramo"], errors="coerce").fillna(0).astype(int)
     df["n_pasajeros"] = pd.to_numeric(df["n_pasajeros"], errors="coerce").fillna(0).astype(int)
@@ -58,12 +59,12 @@ def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
 def _explode_pasajeros(df: pd.DataFrame) -> pd.DataFrame:
     """Fila por pasajero por tramo, con columna 'monto' (= tarifa_por_tramo)."""
     if df is None or df.empty:
-        return pd.DataFrame(columns=["fecha", "conductor", "tramo", "pasajero", "monto"])  
+        return pd.DataFrame(columns=["fecha", "conductor", "tramo", "pasajero", "monto"])
     e = df.copy()
     e["pasajeros_list"] = e["pasajeros"].fillna("").apply(lambda s: [p for p in str(s).split(";") if p])
     e = e.explode("pasajeros_list").rename(columns={"pasajeros_list": "pasajero"})
     if e.empty:
-        return pd.DataFrame(columns=["fecha", "conductor", "tramo", "pasajero", "monto"])  
+        return pd.DataFrame(columns=["fecha", "conductor", "tramo", "pasajero", "monto"])
     e["monto"] = e["tarifa_por_tramo"].astype(int)
     return e[["fecha", "conductor", "tramo", "pasajero", "monto"]]
 
@@ -86,6 +87,7 @@ def _append_rows(rows: List[dict]):
         st.session_state.next_id += 1
     df_new = pd.DataFrame(rows)
     st.session_state.data = pd.concat([st.session_state.data, df_new], ignore_index=True)
+    st.session_state.dirty = True  # marcar cambios para autoguardado
 
 
 def _init_state():
@@ -101,8 +103,10 @@ def _init_state():
         st.session_state.cfg_tarifa = 1250
     if "cfg_incluir_conductor" not in st.session_state:
         st.session_state.cfg_incluir_conductor = False
+    if "dirty" not in st.session_state:
+        st.session_state.dirty = False
 
-# ---------------------------- Sidebar (config & archivos) ----------------------------
+# ---------------------------- Sidebar (configuración, archivos y cloud) ----------------------------
 _init_state()
 st.sidebar.header("⚙️ Configuración")
 colA, colB = st.sidebar.columns(2)
@@ -146,7 +150,7 @@ if up is not None:
             # IDs coherentes
             if df_up["id"].isna().all():
                 if "id" in df_up.columns:
-                    df_up = df_up.drop(columns=["id"]) 
+                    df_up = df_up.drop(columns=["id"])
                 df_up.insert(0, "id", range(st.session_state.next_id, st.session_state.next_id + len(df_up)))
                 st.session_state.next_id += len(df_up)
             else:
@@ -154,6 +158,7 @@ if up is not None:
                 st.session_state.next_id = max(st.session_state.next_id, max_id + 1)
             st.session_state.data = _clean_df(df_up)
             st.session_state.csv_loaded_once = True
+            st.session_state.dirty = True
             st.sidebar.success("Archivo cargado en memoria correctamente.")
             st.rerun()
         except Exception as e:
@@ -174,7 +179,7 @@ st.sidebar.download_button(
 
 st.sidebar.caption("*El CSV incluye la columna* `id` *para poder editar/eliminar con seguridad.*")
 
-# Exportar Excel con hojas (Datos, Resumenes)
+# ---------------------------- Exportar Excel (Datos + Resúmenes) ----------------------------
 # Detección de motor Excel (openpyxl o xlsxwriter)
 _engine_excel = None
 _excel_hint = None
@@ -206,9 +211,13 @@ if st.sidebar.button("⬇️ Exportar Excel (con resúmenes)"):
             with pd.ExcelWriter(output, engine=_engine_excel) as writer:
                 df.to_excel(writer, index=False, sheet_name="Datos")
                 if not df.empty:
-                    df_sum_conductor = df.groupby("conductor", as_index=False)["monto_al_conductor"].sum().rename(columns={"monto_al_conductor": "Total a cobrar"})
+                    df_sum_conductor = df.groupby("conductor", as_index=False)["monto_al_conductor"].sum().rename(
+                        columns={"monto_al_conductor": "Total a cobrar"}
+                    )
                     expl = _explode_pasajeros(df)
-                    df_sum_persona = expl.groupby("pasajero", as_index=False)["monto"].sum().rename(columns={"monto": "Total adeudado"})
+                    df_sum_persona = expl.groupby("pasajero", as_index=False)["monto"].sum().rename(
+                        columns={"monto": "Total adeudado"}
+                    )
                     matriz = _pivot_pasajero_conductor(expl)
                     df_sum_conductor.to_excel(writer, index=False, sheet_name="Resumen Conductor")
                     df_sum_persona.to_excel(writer, index=False, sheet_name="Resumen Persona")
@@ -223,9 +232,145 @@ if st.sidebar.button("⬇️ Exportar Excel (con resúmenes)"):
         except Exception as e:
             st.sidebar.error(f"No se pudo generar el Excel: {e}")
 
+# ---------------------------- Google Sheets (sincronización y autoguardado) ----------------------------
+# Requisitos en requirements.txt: gspread, google-auth
+# Secrets esperados en Streamlit (Manage app → Settings → Secrets):
+# [gcp_service_account]
+# type = "service_account"
+# private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+# client_email = "<service-account>@<project>.iam.gserviceaccount.com"
+# token_uri = "https://oauth2.googleapis.com/token"
+# [gsheets]
+# SPREADSHEET_ID = "<ID del Google Sheet>"
+
+try:
+    from google.oauth2.service_account import Credentials  # type: ignore
+    import gspread  # type: ignore
+    _has_gsheets_libs = True
+except Exception:
+    _has_gsheets_libs = False
+
+st.sidebar.divider()
+st.sidebar.subheader("☁️ Google Sheets")
+
+# ID por defecto desde secrets o el provisto por el usuario
+_default_sheet_id = None
+try:
+    _default_sheet_id = st.secrets.get("gsheets", {}).get("SPREADSHEET_ID")
+except Exception:
+    _default_sheet_id = None
+
+# Valor por defecto: el ID que nos compartiste
+default_from_user = "1NFu3KET3AcR_B4jlnrbJnle0LkkDOV3UOEiK0xEnaFY"
+spreadsheet_id = st.sidebar.text_input(
+    "Spreadsheet ID",
+    value=_default_sheet_id or default_from_user,
+    placeholder="Ej: 1NFu3KET3AcR_B4jlnrbJnle0LkkDOV3UOEiK0xEnaFY",
+    help="Pega el ID del Google Sheet (entre /d/ y /edit) y comparte la hoja con el service account.",
+)
+ws_name = st.sidebar.text_input("Hoja (worksheet)", value=st.session_state.get("ws_name", "Datos"))
+st.session_state.ws_name = ws_name
+
+auto_save = st.sidebar.checkbox("Auto-guardar en Sheets", value=st.session_state.get("auto_save", False))
+st.session_state.auto_save = auto_save
+
+_gsheets_ready = _has_gsheets_libs and bool(spreadsheet_id)
+if not _has_gsheets_libs:
+    st.sidebar.info("Para sincronizar: agrega a requirements.txt → gspread, google-auth")
+elif not spreadsheet_id:
+    st.sidebar.warning("Ingresa el Spreadsheet ID para habilitar la sincronización.")
+
+if _gsheets_ready:
+    def _gsheets_client():
+        scope = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scope)
+        return gspread.authorize(creds)
+
+    def _gsheets_open(ws_title: str):
+        gc = _gsheets_client()
+        sh = gc.open_by_key(spreadsheet_id)
+        try:
+            ws = sh.worksheet(ws_title)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title=ws_title, rows="1000", cols=str(len(COLS)))
+            ws.update("A1", [COLS])
+        return ws
+
+    def _to_sheet_values(df: pd.DataFrame) -> list:
+        d = _clean_df(df).copy()
+        if not d.empty:
+            d["id"] = pd.to_numeric(d["id"], errors="coerce").fillna(0).astype(int)
+            d["fecha"] = pd.to_datetime(d["fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+        return [COLS] + d.astype(object).where(pd.notna(d), "").values.tolist()
+
+    def _from_sheet_values(values: list) -> pd.DataFrame:
+        if not values:
+            return pd.DataFrame(columns=COLS)
+        header, rows = values[0], values[1:]
+        df = pd.DataFrame(rows, columns=header)
+        return _clean_df(df)
+
+    def _save_to_sheets():
+        try:
+            ws = _gsheets_open(ws_name)
+            ws.clear()
+            ws.update("A1", _to_sheet_values(st.session_state.data))
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    # 🔍 Probar conexión
+    if st.sidebar.button("🔍 Probar conexión", key="btn_test_gs"):
+        try:
+            gc = _gsheets_client()
+            sh = gc.open_by_key(spreadsheet_id)
+            ws_titles = [w.title for w in sh.worksheets()]
+            st.sidebar.success(
+                "Conexión OK.\n"
+                f"Spreadsheet: {sh.title}\n"
+                f"Worksheets: {', '.join(ws_titles)}"
+            )
+        except Exception as e:
+            st.sidebar.error(f"No se pudo conectar a Google Sheets: {e}")
+
+    col_g1, col_g2 = st.sidebar.columns(2)
+    with col_g1:
+        if st.button("⬆️ Guardar en Sheets", use_container_width=True, key="btn_save_gs"):
+            ok, err = _save_to_sheets()
+            st.sidebar.success("Sincronizado a Google Sheets.") if ok else st.sidebar.error(
+                f"No se pudo guardar: {err}"
+            )
+    with col_g2:
+        if st.button("⬇️ Cargar desde Sheets", use_container_width=True, key="btn_load_gs"):
+            try:
+                ws = _gsheets_open(ws_name)
+                values = ws.get_all_values()
+                df_new = _from_sheet_values(values)
+                st.session_state.data = _clean_df(df_new)
+                if not st.session_state.data.empty:
+                    st.session_state.data["id"] = pd.to_numeric(
+                        st.session_state.data["id"], errors="coerce"
+                    ).fillna(0).astype(int)
+                    st.session_state.next_id = int(st.session_state.data["id"].max()) + 1
+                else:
+                    st.session_state.next_id = 1
+                st.sidebar.success("Datos cargados desde Google Sheets.")
+                st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"No se pudo cargar: {e}")
+
+    # Auto-guardado si hubo cambios
+    if st.session_state.get("dirty", False) and st.session_state.auto_save:
+        ok, err = _save_to_sheets()
+        if ok:
+            st.session_state.dirty = False
+            st.sidebar.info("Auto-guardado en Sheets.")
+        else:
+            st.sidebar.error(f"Auto-guardado falló: {err}")
+
 # ---------------------------- Ingreso de viajes ----------------------------
 st.title("🚗 Registro de Traslados — Papudo ↔ La Ligua")
-st.caption("Versión consolidada con edición y eliminación.")
+st.caption("Versión con edición, eliminación, Excel y Google Sheets (auto-guardado opcional).")
 
 with st.expander("➕ Agregar viaje", expanded=True):
     c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
@@ -299,6 +444,7 @@ sel_del = st.multiselect("Selecciona IDs a eliminar", ids_disp, placeholder="IDs
 if st.button("Eliminar seleccionadas") and sel_del:
     before = len(st.session_state.data)
     st.session_state.data = st.session_state.data[~st.session_state.data["id"].isin(sel_del)].reset_index(drop=True)
+    st.session_state.dirty = True
     st.success(f"Eliminadas {before - len(st.session_state.data)} filas (por ID).")
     st.rerun()
 
@@ -368,6 +514,7 @@ if edit_id is not None:
             n_p,
             monto,
         ]
+        st.session_state.dirty = True
         st.success(f"Fila ID {edit_id} actualizada.")
         st.rerun()
 
@@ -408,5 +555,6 @@ st.markdown(
     - *Prorrateo:* por defecto el **conductor no paga** su propio cupo. Puedes cambiar esa regla en la barra lateral.
     - *Edición/Corrección:* descarga el CSV, edítalo y vuelve a importarlo si necesitas ajustes masivos.
     - *Exportación:* usa el botón de la barra lateral para generar un Excel con hojas de datos y resúmenes.
+    - *Google Sheets:* comparte la hoja con el *service account* y activa el *Auto-guardar* si quieres persistencia automática.
     """
 )
