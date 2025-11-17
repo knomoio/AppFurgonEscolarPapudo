@@ -237,7 +237,7 @@ if st.sidebar.button("⬇️ Exportar Excel (con resúmenes)"):
 # Secrets esperados en Streamlit (Manage app → Settings → Secrets):
 # [gcp_service_account]
 # type = "service_account"
-# private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+# private_key = "-----BEGIN PRIVATE KEY-----\n... \n-----END PRIVATE KEY-----\n"
 # client_email = "<service-account>@<project>.iam.gserviceaccount.com"
 # token_uri = "https://oauth2.googleapis.com/token"
 # [gsheets]
@@ -333,13 +333,15 @@ if _gsheets_ready:
         except Exception as e:
             st.sidebar.error(f"No se pudo conectar a Google Sheets: {e}")
 
+    # Botones Guardar / Cargar (versión sin operador ternario)
     col_g1, col_g2 = st.sidebar.columns(2)
     with col_g1:
         if st.button("⬆️ Guardar en Sheets", use_container_width=True, key="btn_save_gs"):
             ok, err = _save_to_sheets()
-            st.sidebar.success("Sincronizado a Google Sheets.") if ok else st.sidebar.error(
-                f"No se pudo guardar: {err}"
-            )
+            if ok:
+                st.sidebar.success("Sincronizado a Google Sheets.")
+            else:
+                st.sidebar.error(f"No se pudo guardar: {err}")
     with col_g2:
         if st.button("⬇️ Cargar desde Sheets", use_container_width=True, key="btn_load_gs"):
             try:
